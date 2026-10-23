@@ -1,0 +1,16 @@
+[project]
+name = "llm-random-number"
+version = "0.1.0"
+authors = [
+    { name = "davkk", email = "40724893+davkk@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.159.1",
+    "python-dotenv>=1.2.4",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.1",
+]
