@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 import urllib.request
 import json
 import logging
@@ -46,8 +46,24 @@ class Run(BaseModel):
     samples_per_prompt: int
 
 
+def db_conn():
+    conn = sqlite3.connect("data.db", timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@contextmanager
+def db():
+    with closing(db_conn()) as conn, conn:
+        yield conn
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    with db() as conn:
+        with open("schema.sql", "r") as f, conn:
+            conn.executescript(f.read())
+        conn.execute("update run set completed = 0 where completed is null")
     workers = [asyncio.create_task(worker()) for _ in range(1)]
     yield
     for task in workers:
@@ -55,19 +71,11 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*workers, return_exceptions=True)
 
 
-db = sqlite3.connect("data.db")
-with open("schema.sql", "r") as f, db:
-    db.executescript(f.read())
-
-
-def get_or_create_prompt(content: str) -> int:
-    with db:
-        row = db.execute("select id from prompt where content = ?", (content,))
-        row = row.fetchone()
-        if row:
-            return row[0]
-        cur = db.execute("insert into prompt (content) values (?)", (content,))
-        return cur.lastrowid
+def get_or_create_prompt(conn: sqlite3.Connection, content: str) -> int:
+    row = conn.execute("select id from prompt where content = ?", (content,)).fetchone()
+    if row:
+        return row[0]
+    return conn.execute("insert into prompt (content) values (?)", (content,)).lastrowid
 
 
 app = FastAPI(lifespan=lifespan)
@@ -84,8 +92,11 @@ def make_request_sync(method: str, endpoint: str, payload: dict | None = None):
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        logger.error("failed to make request: %s, %s", e.code, e.read().decode())
+    except urllib.error.HTTPError as e:
+        logger.error("HTTP %s: %s", e.code, e.read().decode())
+        return {}
+    except Exception:
+        logger.exception("request failed")
         return {}
 
 
@@ -96,13 +107,11 @@ async def make_request(method: str, endpoint: str, payload: dict | None = None):
 async def is_model_loaded(name: str):
     resp = await make_request("GET", "/models")
     models = resp.get("data", [])
-    assert models
-    cur = None
-    for m in models:
-        if m["id"] == name:
-            cur = m
-            break
-    assert cur
+    if not models:
+        raise RuntimeError("No models found")
+    cur = next((m for m in models if m["id"] == name), None)
+    if not cur:
+        raise RuntimeError(f'Model "{name}" not found')
     return cur.get("status", {}).get("value", "unloaded") == "loaded"
 
 
@@ -127,46 +136,50 @@ async def unload_model(name: str):
 
 
 @app.get("/samples")
-async def get_samples(run_id: int):
-    with db:
-        try:
-            run = db.execute("select 1 from run where id = ?", (run_id,)).fetchone()
+def get_samples(run_id: int):
+    try:
+        with db() as conn:
+            run = conn.execute("select 1 from run where id = ?", (run_id,)).fetchone()
             if not run:
                 raise HTTPException(status_code=404, detail="Run not found")
 
-            return db.execute(
+            return conn.execute(
                 "select experiment, model, content as prompt, raw from sample "
                 "join prompt on sample.prompt_id = prompt.id "
                 "join run on sample.run_id = run.id "
                 "where run_id = ?",
                 (run_id,),
             ).fetchall()
-        except sqlite3.Error as e:
-            logger.exception("Error getting samples for run %s", run_id)
-            raise HTTPException(status_code=500, detail=f"Internal database error")
+    except sqlite3.Error as e:
+        logger.exception("Error getting samples for run %s", run_id)
+        raise HTTPException(status_code=500, detail=f"Internal database error")
 
 
 @app.get("/runs")
-async def get_runs():
-    with db:
-        try:
-            return db.execute("select * from run").fetchall()
-        except sqlite3.Error as e:
-            logger.exception("Error getting runs")
-            raise HTTPException(status_code=500, detail=f"Internal database error")
+def get_runs():
+    try:
+        with db() as conn:
+            return conn.execute("select * from run").fetchall()
+    except sqlite3.Error as e:
+        logger.exception("Error getting runs")
+        raise HTTPException(status_code=500, detail=f"Internal database error")
+
+
+def create_run(req: RunRequest):
+    with db() as conn:
+        run_id = conn.execute(
+            "insert into run (experiment, model, samples_per_prompt) values (?, ?, ?)",
+            (req.experiment, req.model, req.samples_per_prompt),
+        ).lastrowid
+        prompts = [(get_or_create_prompt(conn, p), p) for p in req.prompts]
+    return run_id, prompts
 
 
 @app.post("/runs", status_code=202)
 async def start_run(req: RunRequest):
     # TODO: add run unique title/identifier?
     try:
-        with db:
-            cur = db.execute(
-                "insert into run (experiment, model, samples_per_prompt) values (?, ?, ?)",
-                (req.experiment, req.model, req.samples_per_prompt),
-            )
-            run_id = cur.lastrowid
-            prompts = [(get_or_create_prompt(p), p) for p in req.prompts]
+        run_id, prompts = await asyncio.to_thread(create_run, req)
     except sqlite3.Error:
         logger.exception("Error starting run")
         raise HTTPException(status_code=500, detail="Internal database error")
@@ -196,6 +209,8 @@ async def send_prompt(model: str, prompt: str):
         temperature=1.0,
         top_p=1.0,
         max_tokens=16,
+        chat_template_kwargs={"enable_thinking": False},
+        reasoning_effort="none",
     )
     resp = await make_request("POST", "/v1/chat/completions", payload)
     if not resp:
@@ -203,10 +218,13 @@ async def send_prompt(model: str, prompt: str):
     return resp.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
-async def set_run_status(run_id: int, status: RunStatus):
+def set_run_status(run_id: int, status: RunStatus):
     try:
-        with db:
-            db.execute("update run set completed = ? where id = ?", (status.value, run_id))
+        with db() as conn:
+            conn.execute(
+                "update run set completed = ? where id = ?",
+                (status.value, run_id),
+            )
         return True
     except sqlite3.Error as e:
         logger.exception("Could not mark run %s as %s: %s", run_id, status.value, e)
@@ -229,21 +247,25 @@ async def process_run(run: Run):
     return samples
 
 
+def save_samples(samples: list[tuple]):
+    with db() as conn:
+        conn.executemany(  # TODO: batch inserts?
+            "insert into sample (run_id, prompt_id, sample_index, raw) "
+            "values (?, ?, ?, ?)",
+            samples,
+        )
+
+
 async def worker():
     while True:
         run = await queue.get()
         try:
             samples = await process_run(run)
-            with db:
-                db.executemany(
-                    "insert into sample (run_id, prompt_id, sample_index, raw) "
-                    "values (?, ?, ?, ?)",
-                    samples,
-                )
-            await set_run_status(run.run_id, RunStatus.COMPLETED)
+            await asyncio.to_thread(save_samples, samples)
+            set_run_status(run.run_id, RunStatus.COMPLETED)
         except Exception:
             logger.exception("Run %s failed", run.run_id)
-            await set_run_status(run.run_id, RunStatus.FAILED)
+            set_run_status(run.run_id, RunStatus.FAILED)
         finally:
             queue.task_done()
             # TODO: unload model once all runs are done

@@ -1,4 +1,5 @@
 pragma foreign_keys = on;
+pragma journal_mode = wal;
 
 create table if not exists prompt (
     id integer primary key,
