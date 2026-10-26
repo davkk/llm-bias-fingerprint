@@ -8,7 +8,7 @@ import sqlite3
 import time
 from enum import Enum
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -27,19 +27,23 @@ logger = logging.getLogger(__name__)
 
 
 class RunStatus(Enum):
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    RUNNING = None
+    COMPLETED = 1
+    FAILED = 0
 
 
 class RunRequest(BaseModel):
+    experiment: str
     model: str
-    prompt: str
+    prompts: list[str]
+    samples_per_prompt: int
 
 
 class Run(BaseModel):
-    request: RunRequest
-    status: RunStatus
+    run_id: int
+    model: str
+    prompts: list[tuple[int, str]]
+    samples_per_prompt: int
 
 
 @asynccontextmanager
@@ -52,40 +56,22 @@ async def lifespan(app: FastAPI):
 
 
 db = sqlite3.connect("data.db")
-with open("schema.sql", "r") as f:
+with open("schema.sql", "r") as f, db:
     db.executescript(f.read())
 
-db.execute("insert or ignore into language (name) values ('en')")
-db.commit()
 
-
-def get_or_create_experiment(prompt: str) -> int:
-    row = db.execute("select id from experiment where initial_prompt = ?", (prompt))
-    row = row.fetchone()
-    if row:
-        return row[0]
-    row = db.execute("insert into experiment (initial_prompt) values (?)", (prompt))
-    return cur.lastrowid
-
-
-def get_or_create_prompt(experiment_id: int, content: str) -> int:
-    row = db.execute(
-        "select id from prompt where experiment_id = ? and language_id = ? and content = ?",
-        (experiment_id, 1, content),
-    )
-    row = row.fetchone()
-    if row:
-        return row[0]
-    cur = db.execute(
-        "insert into prompt (experiment_id, language_id, content) values (?, ?, ?)",
-        (experiment_id, 1, content),
-    )
-    return cur.lastrowid
+def get_or_create_prompt(content: str) -> int:
+    with db:
+        row = db.execute("select id from prompt where content = ?", (content,))
+        row = row.fetchone()
+        if row:
+            return row[0]
+        cur = db.execute("insert into prompt (content) values (?)", (content,))
+        return cur.lastrowid
 
 
 app = FastAPI(lifespan=lifespan)
 queue = asyncio.Queue()
-runs: dict[int, Run] = {}
 
 
 def make_request_sync(method: str, endpoint: str, payload: dict | None = None):
@@ -140,37 +126,72 @@ async def unload_model(name: str):
     assert resp.get("success")
 
 
+@app.get("/samples")
+async def get_samples(run_id: int):
+    with db:
+        try:
+            run = db.execute("select 1 from run where id = ?", (run_id,)).fetchone()
+            if not run:
+                raise HTTPException(status_code=404, detail="Run not found")
+
+            return db.execute(
+                "select experiment, model, content as prompt, raw from sample "
+                "join prompt on sample.prompt_id = prompt.id "
+                "join run on sample.run_id = run.id "
+                "where run_id = ?",
+                (run_id,),
+            ).fetchall()
+        except sqlite3.Error as e:
+            logger.exception("Error getting samples for run %s", run_id)
+            raise HTTPException(status_code=500, detail=f"Internal database error")
+
+
 @app.get("/runs")
 async def get_runs():
-    return runs
+    with db:
+        try:
+            return db.execute("select * from run").fetchall()
+        except sqlite3.Error as e:
+            logger.exception("Error getting runs")
+            raise HTTPException(status_code=500, detail=f"Internal database error")
 
 
 @app.post("/runs", status_code=202)
 async def start_run(req: RunRequest):
-    with db:
-        experiment_id = get_or_create_experiment(req.prompt)
-        prompt_id = get_or_create_prompt(experiment_id, req.prompt)
-        cur = db.execute(
-            "insert into run (experiment_id, model) values (?, ?)",
-            (experiment_id, req.model),
-        )
-        run_id = cur.lastrowid
+    # TODO: add run unique title/identifier?
+    try:
+        with db:
+            cur = db.execute(
+                "insert into run (experiment, model, samples_per_prompt) values (?, ?, ?)",
+                (req.experiment, req.model, req.samples_per_prompt),
+            )
+            run_id = cur.lastrowid
+            prompts = [(get_or_create_prompt(p), p) for p in req.prompts]
+    except sqlite3.Error:
+        logger.exception("Error starting run")
+        raise HTTPException(status_code=500, detail="Internal database error")
 
-    runs[run_id] = Run(request=req, status=RunStatus.RUNNING)
-    await queue.put((run_id, req, prompt_id))
+    await queue.put(
+        Run(
+            run_id=run_id,
+            model=req.model,
+            prompts=prompts,
+            samples_per_prompt=req.samples_per_prompt,
+        )
+    )
     return dict(run_id=run_id)
 
 
-async def send_prompt(req: RunRequest):
+async def send_prompt(model: str, prompt: str):
     messages = [
         dict(
             role="system",
             content=f"current time: {time.monotonic_ns()}. respond only with number or a word that the user asks for",
         ),
-        dict(role="user", content=req.prompt),
+        dict(role="user", content=prompt),
     ]
     payload = dict(
-        model=req.model,
+        model=model,
         messages=messages,
         temperature=1.0,
         top_p=1.0,
@@ -182,31 +203,47 @@ async def send_prompt(req: RunRequest):
     return resp.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
+async def set_run_status(run_id: int, status: RunStatus):
+    try:
+        with db:
+            db.execute("update run set completed = ? where id = ?", (status.value, run_id))
+        return True
+    except sqlite3.Error as e:
+        logger.exception("Could not mark run %s as %s: %s", run_id, status.value, e)
+        return False
+
+
+async def process_run(run: Run):
+    if not await is_model_loaded(run.model):
+        await load_model(run.model)
+    samples = []
+    for prompt_id, prompt in run.prompts:  # TODO: run in parallel
+        idx = 0
+        while idx < run.samples_per_prompt:  # TODO: cap the retries
+            raw = await send_prompt(run.model, prompt)
+            raw = raw.strip()
+            if not raw:
+                continue
+            idx += 1
+            samples.append((run.run_id, prompt_id, idx, raw))
+    return samples
+
+
 async def worker():
     while True:
-        run_id, req, prompt_id = await queue.get()
+        run = await queue.get()
         try:
-            is_loaded = await is_model_loaded(req.model)
-            if not is_loaded:
-                await load_model(req.model)
-            idx = 0
-            while idx < 3:
-                raw = await send_prompt(req)
-                raw = raw.strip()
-                if not raw:
-                    continue
-                db.execute(
-                    "insert into sample (run_id, prompt_id, sample_index, raw) values (?, ?, ?, ?)",
-                    (run_id, prompt_id, idx, raw),
+            samples = await process_run(run)
+            with db:
+                db.executemany(
+                    "insert into sample (run_id, prompt_id, sample_index, raw) "
+                    "values (?, ?, ?, ?)",
+                    samples,
                 )
-                db.commit()
-                idx += 1
-            db.execute("update run set completed = 1 where id = ?", (run_id))
-            db.commit()
-            runs[run_id].status = RunStatus.COMPLETED
+            await set_run_status(run.run_id, RunStatus.COMPLETED)
         except Exception:
-            logger.exception("Run %s failed", run_id)
-            runs[run_id].status = RunStatus.FAILED
+            logger.exception("Run %s failed", run.run_id)
+            await set_run_status(run.run_id, RunStatus.FAILED)
         finally:
             queue.task_done()
-            # await unload_model(req.model)  # TODO: fix unload race
+            # TODO: unload model once all runs are done

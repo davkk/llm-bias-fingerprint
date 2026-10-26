@@ -1,33 +1,16 @@
 pragma foreign_keys = on;
 
-create table if not exists experiment (
-    id integer primary key,
-    initial_prompt text not null,
-    num_prompts integer,
-    samples_per_prompt integer
-);
-
-create table if not exists language (
-    id integer primary key,
-    name text not null,
-    unique (name)
-);
-
 create table if not exists prompt (
     id integer primary key,
-    experiment_id integer not null,
-    language_id integer not null,
-    content text,
-    constraint fk_experiment_id foreign key (experiment_id) references experiment(id),
-    constraint fk_language_id foreign key (language_id) references language(id)
+    content text not null
 );
 
 create table if not exists run (
     id integer primary key,
-    experiment_id integer not null,
+    experiment text not null,
     model text not null,
-    completed boolean,
-    constraint fk_experiment_id foreign key (experiment_id) references experiment(id)
+    samples_per_prompt integer not null,
+    completed boolean
 );
 
 create table if not exists sample (
@@ -40,3 +23,5 @@ create table if not exists sample (
     constraint fk_run_id foreign key (run_id) references run(id),
     constraint fk_prompt_id foreign key (prompt_id) references prompt(id)
 );
+
+-- TODO: add indexes for ids
