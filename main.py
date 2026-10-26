@@ -1,15 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 import urllib.request
-from uuid import uuid4
-from collections import defaultdict
-from dataclasses import dataclass
 import json
 import logging
 import os
 import sqlite3
 import time
-from typing import Literal
 from enum import Enum
 
 from fastapi import FastAPI
@@ -30,21 +26,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class JobRequestStatus(Enum):
+class RunStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
-class JobRequest(BaseModel):
+class RunRequest(BaseModel):
     model: str
     prompt: str
 
 
-class Job(BaseModel):
-    job: JobRequest
-    status: JobRequestStatus
-    result: list[str] | None
+class Run(BaseModel):
+    request: RunRequest
+    status: RunStatus
 
 
 @asynccontextmanager
@@ -60,10 +55,37 @@ db = sqlite3.connect("data.db")
 with open("schema.sql", "r") as f:
     db.executescript(f.read())
 
+db.execute("insert or ignore into language (name) values ('en')")
+db.commit()
+
+
+def get_or_create_experiment(prompt: str) -> int:
+    row = db.execute("select id from experiment where initial_prompt = ?", (prompt))
+    row = row.fetchone()
+    if row:
+        return row[0]
+    row = db.execute("insert into experiment (initial_prompt) values (?)", (prompt))
+    return cur.lastrowid
+
+
+def get_or_create_prompt(experiment_id: int, content: str) -> int:
+    row = db.execute(
+        "select id from prompt where experiment_id = ? and language_id = ? and content = ?",
+        (experiment_id, 1, content),
+    )
+    row = row.fetchone()
+    if row:
+        return row[0]
+    cur = db.execute(
+        "insert into prompt (experiment_id, language_id, content) values (?, ?, ?)",
+        (experiment_id, 1, content),
+    )
+    return cur.lastrowid
+
 
 app = FastAPI(lifespan=lifespan)
 queue = asyncio.Queue()
-jobs: dict[str, Job] = {}
+runs: dict[int, Run] = {}
 
 
 def make_request_sync(method: str, endpoint: str, payload: dict | None = None):
@@ -79,7 +101,6 @@ def make_request_sync(method: str, endpoint: str, payload: dict | None = None):
     except Exception as e:
         logger.error("failed to make request: %s, %s", e.code, e.read().decode())
         return {}
-
 
 
 async def make_request(method: str, endpoint: str, payload: dict | None = None):
@@ -119,29 +140,37 @@ async def unload_model(name: str):
     assert resp.get("success")
 
 
-@app.get("/jobs")
-async def get_jobs():
-    return jobs
+@app.get("/runs")
+async def get_runs():
+    return runs
 
 
-@app.post("/jobs", status_code=202)
-async def start_job(job: JobRequest):
-    job_id = str(uuid4())
-    jobs[job_id] = Job(job=job, status=JobRequestStatus.RUNNING, result=None)
-    await queue.put((job_id, job))
-    return dict(job_id=job_id)
+@app.post("/runs", status_code=202)
+async def start_run(req: RunRequest):
+    with db:
+        experiment_id = get_or_create_experiment(req.prompt)
+        prompt_id = get_or_create_prompt(experiment_id, req.prompt)
+        cur = db.execute(
+            "insert into run (experiment_id, model) values (?, ?)",
+            (experiment_id, req.model),
+        )
+        run_id = cur.lastrowid
+
+    runs[run_id] = Run(request=req, status=RunStatus.RUNNING)
+    await queue.put((run_id, req, prompt_id))
+    return dict(run_id=run_id)
 
 
-async def send_prompt(job: JobRequest):
+async def send_prompt(req: RunRequest):
     messages = [
         dict(
             role="system",
             content=f"current time: {time.monotonic_ns()}. respond only with number or a word that the user asks for",
         ),
-        dict(role="user", content=job.prompt),
+        dict(role="user", content=req.prompt),
     ]
     payload = dict(
-        model=job.model,
+        model=req.model,
         messages=messages,
         temperature=1.0,
         top_p=1.0,
@@ -150,33 +179,34 @@ async def send_prompt(job: JobRequest):
     resp = await make_request("POST", "/v1/chat/completions", payload)
     if not resp:
         raise Exception("Error in API request")
-    return (
-        resp.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-        .lower()
-    )
+    return resp.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
 async def worker():
     while True:
-        job_id, job = await queue.get()
+        run_id, req, prompt_id = await queue.get()
         try:
-            is_loaded = await is_model_loaded(job.model)
+            is_loaded = await is_model_loaded(req.model)
             if not is_loaded:
-                await load_model(job.model)
-            results = []
-            while len(results) < 10:
-                ans = await send_prompt(job)
-                if not ans:
+                await load_model(req.model)
+            idx = 0
+            while idx < 3:
+                raw = await send_prompt(req)
+                raw = raw.strip()
+                if not raw:
                     continue
-                results.append(ans)
-            jobs[job_id].status = JobRequestStatus.COMPLETED
-            jobs[job_id].result = results
-        except Exception as e:
-            logger.exception("Job %s failed", job_id)
-            jobs[job_id].status = JobRequestStatus.FAILED
+                db.execute(
+                    "insert into sample (run_id, prompt_id, sample_index, raw) values (?, ?, ?, ?)",
+                    (run_id, prompt_id, idx, raw),
+                )
+                db.commit()
+                idx += 1
+            db.execute("update run set completed = 1 where id = ?", (run_id))
+            db.commit()
+            runs[run_id].status = RunStatus.COMPLETED
+        except Exception:
+            logger.exception("Run %s failed", run_id)
+            runs[run_id].status = RunStatus.FAILED
         finally:
             queue.task_done()
-            # await unload_model(job.model)  # TODO: fix unload race
+            # await unload_model(req.model)  # TODO: fix unload race
