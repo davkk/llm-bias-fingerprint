@@ -1,5 +1,5 @@
 [project]
-name = "llm-random-number"
+name = "llm-bias-fingerprint"
 version = "0.1.0"
 authors = [
     { name = "davkk", email = "40724893+davkk@users.noreply.github.com" }
