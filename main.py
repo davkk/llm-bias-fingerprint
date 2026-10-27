@@ -1,17 +1,16 @@
 import asyncio
-from contextlib import asynccontextmanager, closing, contextmanager
-import urllib.request
 import json
 import logging
 import os
 import sqlite3
 import time
+import urllib.request
+from contextlib import asynccontextmanager, closing, contextmanager
 from enum import Enum
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -199,7 +198,7 @@ async def send_prompt(model: str, prompt: str):
     messages = [
         dict(
             role="system",
-            content=f"current time: {time.monotonic_ns()}. respond only with number or a word that the user asks for",
+            content="respond only with a number or a word that the user asks for",
         ),
         dict(role="user", content=prompt),
     ]
@@ -234,7 +233,6 @@ def set_run_status(run_id: int, status: RunStatus):
 async def process_run(run: Run):
     if not await is_model_loaded(run.model):
         await load_model(run.model)
-    samples = []
     for prompt_id, prompt in run.prompts:  # TODO: run in parallel
         idx = 0
         while idx < run.samples_per_prompt:  # TODO: cap the retries
@@ -242,16 +240,14 @@ async def process_run(run: Run):
             raw = raw.strip()
             if not raw:
                 continue
+            yield (run.run_id, prompt_id, idx, raw)
             idx += 1
-            samples.append((run.run_id, prompt_id, idx, raw))
-    return samples
 
 
 def save_samples(samples: list[tuple]):
     with db() as conn:
-        conn.executemany(  # TODO: batch inserts?
-            "insert into sample (run_id, prompt_id, sample_index, raw) "
-            "values (?, ?, ?, ?)",
+        conn.executemany(
+            "insert into sample (run_id, prompt_id, sample_index, raw) values (?, ?, ?, ?)",
             samples,
         )
 
@@ -260,8 +256,12 @@ async def worker():
     while True:
         run = await queue.get()
         try:
-            samples = await process_run(run)
-            await asyncio.to_thread(save_samples, samples)
+            batch = []
+            async for sample in process_run(run):
+                batch.append(sample)
+                if len(batch) >= 10:
+                    await asyncio.to_thread(save_samples, batch)
+                    batch = []
             set_run_status(run.run_id, RunStatus.COMPLETED)
         except Exception:
             logger.exception("Run %s failed", run.run_id)
