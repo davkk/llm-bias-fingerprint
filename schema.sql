@@ -11,6 +11,8 @@ create table if not exists run (
     experiment text not null,
     model text not null,
     samples_per_prompt integer not null,
+    temperature real not null,
+    top_p real not null,
     completed boolean
 );
 

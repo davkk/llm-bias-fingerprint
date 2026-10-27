@@ -1,7 +1,7 @@
 EXPERIMENT ?= smoke
 MODEL   ?= Qwen3.5-4B-Q4_0
 PROMPT  ?= random number from 1 to 100
-SAMPLES ?= 1000
+SAMPLES ?= 10
 
 .PHONY: run backend check test measure clean
 

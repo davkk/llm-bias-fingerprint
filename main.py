@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+MAX_RETRIES = 5
+
 API_URL = os.getenv("API_URL")
 assert API_URL
 # API_TOKEN = os.getenv("API_TOKEN")
@@ -62,7 +64,6 @@ async def lifespan(app: FastAPI):
     with db() as conn:
         with open("schema.sql", "r") as f, conn:
             conn.executescript(f.read())
-        conn.execute("update run set completed = 0 where completed is null")
     workers = [asyncio.create_task(worker()) for _ in range(1)]
     yield
     for task in workers:
@@ -176,7 +177,6 @@ def create_run(req: RunRequest):
 
 @app.post("/runs", status_code=202)
 async def start_run(req: RunRequest):
-    # TODO: add run unique title/identifier?
     try:
         run_id, prompts = await asyncio.to_thread(create_run, req)
     except sqlite3.Error:
@@ -205,6 +205,7 @@ async def send_prompt(model: str, prompt: str):
     payload = dict(
         model=model,
         messages=messages,
+        # TODO: make this configurable via request
         temperature=1.0,
         top_p=1.0,
         max_tokens=16,
@@ -235,20 +236,22 @@ async def process_run(run: Run):
         await load_model(run.model)
     for prompt_id, prompt in run.prompts:  # TODO: run in parallel
         idx = 0
-        while idx < run.samples_per_prompt:  # TODO: cap the retries
+        empty = 0
+        while idx < run.samples_per_prompt and empty < MAX_RETRIES:  # TODO: cap the retries
             raw = await send_prompt(run.model, prompt)
             raw = raw.strip()
             if not raw:
+                empty += 1
                 continue
             yield (run.run_id, prompt_id, idx, raw)
             idx += 1
 
 
-def save_samples(samples: list[tuple]):
+def save_sample(sample: tuple[int, int, int, str]):
     with db() as conn:
-        conn.executemany(
+        conn.execute(
             "insert into sample (run_id, prompt_id, sample_index, raw) values (?, ?, ?, ?)",
-            samples,
+            sample,
         )
 
 
@@ -256,12 +259,8 @@ async def worker():
     while True:
         run = await queue.get()
         try:
-            batch = []
             async for sample in process_run(run):
-                batch.append(sample)
-                if len(batch) >= 10:
-                    await asyncio.to_thread(save_samples, batch)
-                    batch = []
+                await asyncio.to_thread(save_sample, sample)
             set_run_status(run.run_id, RunStatus.COMPLETED)
         except Exception:
             logger.exception("Run %s failed", run.run_id)
