@@ -16,7 +16,8 @@ format:
 	ruff format --line-length=120 .
 
 check:
-	ruff check .
+	ty check --output-format=concise .
+	ruff check --output-format=concise .
 
 measure: ## start a run, e.g. make measure PROMPT="random color" SAMPLES=50
 	curl -sf -X POST localhost:8000/runs -H 'content-type: application/json' \

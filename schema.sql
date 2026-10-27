@@ -1,9 +1,9 @@
-pragma foreign_keys = on;
 pragma journal_mode = wal;
 
 create table if not exists prompt (
     id integer primary key,
-    content text not null
+    content text not null,
+    unique (content)
 );
 
 create table if not exists run (
@@ -11,20 +11,23 @@ create table if not exists run (
     experiment text not null,
     model text not null,
     samples_per_prompt integer not null,
-    temperature real not null,
-    top_p real not null,
-    completed boolean
+    attempts integer not null default 0,
+    lease_until integer,
+    completed boolean -- null = pending/running, 1 = ok, 0 = failed
+);
+
+create table if not exists run_prompt (
+    run_id integer not null references run(id),
+    prompt_id integer not null references prompt(id),
+    primary key (run_id, prompt_id)
 );
 
 create table if not exists sample (
-    id integer primary key,
-    run_id integer not null,
-    prompt_id integer not null,
+    run_id integer not null references run(id),
+    prompt_id integer not null references prompt(id),
     sample_index integer not null,
     raw text not null,
-    unique (run_id, prompt_id, sample_index),
-    constraint fk_run_id foreign key (run_id) references run(id),
-    constraint fk_prompt_id foreign key (prompt_id) references prompt(id)
+    primary key (run_id, prompt_id, sample_index)
 );
 
 -- TODO: add indexes for ids
