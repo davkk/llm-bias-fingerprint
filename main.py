@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 load_dotenv()
@@ -157,6 +158,29 @@ async def unload_model(name: str):
     assert resp.get("success")
 
 
+@app.get("/prompts")
+def get_prompts(run_id: int):
+    try:
+        with db() as conn:
+            run = conn.execute("select 1 from run where id = :run_id", {"run_id": run_id}).fetchone()
+            if not run:
+                raise HTTPException(status_code=404, detail="Run not found")
+            rows = conn.execute(
+                """
+                select prompt.content
+                from run_prompt
+                join prompt on run_prompt.prompt_id = prompt.id
+                where run_prompt.run_id = :run_id
+                order by prompt.id
+                """,
+                {"run_id": run_id},
+            ).fetchall()
+            return [row["content"] for row in rows]
+    except sqlite3.Error:
+        logger.exception("Error getting prompts for run %s", run_id)
+        raise HTTPException(status_code=500, detail="Internal database error")
+
+
 @app.get("/samples")
 def get_samples(run_id: int):
     try:
@@ -185,7 +209,9 @@ def get_samples(run_id: int):
 def get_runs():
     try:
         with db() as conn:
-            return conn.execute("select * from run").fetchall()
+            return conn.execute(
+                "select id, experiment, model, samples_per_prompt, lease_until, completed from run"
+            ).fetchall()
     except sqlite3.Error:
         logger.exception("Error getting runs")
         raise HTTPException(status_code=500, detail="Internal database error")
@@ -514,3 +540,6 @@ async def worker():
                 await hb
             except asyncio.CancelledError:
                 pass
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static_root")

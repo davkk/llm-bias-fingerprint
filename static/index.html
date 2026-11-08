@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>runs</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222c;
+  --border: #262b36;
+  --text: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #4c8dff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+}
+
+body {
+  margin: 0; padding: 0 24px 48px;
+  background: var(--bg); color: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px; line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.topbar {
+  display: flex; flex-direction: row; align-items: center; gap: 12px;
+  flex-wrap: wrap; row-gap: 8px;
+  position: sticky; top: 0; z-index: 10; background: var(--bg);
+  border-bottom: 1px solid var(--border); padding: 14px 0;
+}
+
+.title { font-size: 15px; font-weight: 600; letter-spacing: .02em; margin: 0; }
+
+.status {
+  display: flex; flex-direction: row; gap: 6px; align-items: center;
+  font-size: 12px; color: var(--muted);
+}
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: var(--ok); }
+.dot-err { background: var(--err); }
+.dot-pause { background: var(--muted); }
+
+.spacer { flex: 1; }
+.updated { font-size: 12px; color: var(--muted); }
+
+.btn {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 10px; font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.active { color: var(--accent); border-color: var(--accent); }
+
+.stats {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px; margin: 18px 0;
+}
+.stat {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.stat-value { font-size: 22px; font-weight: 600; line-height: 1; }
+.stat-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted);
+}
+
+.content { overflow-x: auto; }
+
+table.runs { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.runs th {
+  text-align: left; font-weight: 500; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+table.runs td {
+  padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle;
+}
+
+.run-row { cursor: pointer; }
+.run-row:hover { background: var(--panel); }
+.run-row.expanded { background: var(--panel); }
+
+.chip {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; border: 1px solid transparent;
+}
+.chip-running {
+  color: var(--accent); background: rgba(76, 141, 255, .14);
+  border-color: rgba(76, 141, 255, .35);
+}
+.chip-pending {
+  color: var(--muted); background: rgba(139, 147, 167, .12);
+  border-color: rgba(139, 147, 167, .3);
+}
+.chip-done {
+  color: var(--ok); background: rgba(63, 185, 80, .14);
+  border-color: rgba(63, 185, 80, .35);
+}
+.chip-stalled {
+  color: var(--warn); background: rgba(210, 153, 34, .14);
+  border-color: rgba(210, 153, 34, .35);
+}
+
+.progress {
+  display: inline-block; width: 140px; height: 6px; background: var(--panel-2);
+  border-radius: 999px; overflow: hidden; vertical-align: middle;
+}
+.progress-bar {
+  height: 100%; width: 0; background: var(--accent);
+  border-radius: 999px; transition: width .3s ease;
+}
+.progress-bar.done { background: var(--ok); }
+.progress-label { font-size: 11px; color: var(--muted); margin-left: 8px; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+.col-id { width: 44px; }
+.col-progress { width: 200px; }
+.col-samples { width: 110px; }
+.col-lease { width: 80px; }
+
+.lease { color: var(--muted); }
+.lease.live { color: var(--ok); }
+.lease.stalled { color: var(--warn); }
+
+.detail-row td { padding: 0; background: var(--bg); }
+.detail { padding: 12px 16px 16px; border-left: 2px solid var(--border); }
+.samples-group { margin-bottom: 12px; }
+.samples-prompt {
+  display: block; font-size: 12px; color: var(--muted);
+  margin-bottom: 6px; white-space: pre-wrap;
+}
+.samples { display: flex; flex-wrap: wrap; gap: 6px; }
+.sample {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px;
+}
+.sample-index { color: var(--muted); margin-right: 6px; font-size: 10px; }
+.sample-raw { font-family: ui-monospace, monospace; }
+
+.detail-note { font-size: 12px; color: var(--muted); margin: 0; }
+.detail-note.err { color: var(--err); }
+
+.detail-prompts {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-bottom: 12px;
+}
+.detail-prompts-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted);
+}
+.detail-prompts-list {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.detail-prompt-chip {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px;
+  max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.detail-samples { }
+
+.empty { font-size: 13px; color: var(--muted); padding: 28px 8px; }
+
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } table.runs .col-samples { display: none; } }
+
+
+/* ---- shell overrides ---- */
+.stat-value.running { color: var(--accent); }
+.stat-value.waiting { color: var(--muted); }
+.stat-value.done    { color: var(--ok); }
+.topbar h1 { display: flex; align-items: baseline; gap: 8px; }
+.topbar h1 small { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+tr.run-row td:first-child { color: var(--muted); }
+.offline #runs-body { opacity: .45; }
+
+/* ---- distribution ---- */
+.distribution { margin-top: 24px; }
+.distribution-head {
+  display: flex; flex-direction: row; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border); padding: 8px 0;
+}
+.distribution-title { font-size: 12px; font-weight: 600; letter-spacing: .02em; margin: 0; }
+.distribution-n { font-size: 11px; color: var(--muted); }
+.distribution-rows { padding-top: 6px; }
+.distribution-row {
+  display: flex; flex-direction: row; align-items: center; gap: 12px;
+  padding: 3px 0; min-width: 620px;
+}
+.distribution-model {
+  flex: 0 0 190px; width: 190px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.distribution-bar {
+  display: flex; flex-direction: row; flex: 1 1 auto;
+  height: 14px; box-sizing: border-box;
+  border-radius: 6px; overflow: hidden; background: var(--panel-2);
+}
+.distribution-seg {
+  display: flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; height: 100%; overflow: hidden;
+}
+.distribution-seg-label {
+  font-size: 11px; font-weight: 600; line-height: 1; color: #0f1115;
+  padding: 0 4px; white-space: nowrap;
+}
+.distribution-share {
+  flex: 0 0 auto; min-width: 190px; text-align: right;
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.distribution-all { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 7px; }
+.distribution-note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+.offline .distribution-rows { opacity: .45; }
+
+/* ---- planes ---- */
+.planes-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.planes-chip { padding: 2px 8px; font-size: 11px; }
+
+.planes { margin-top: 24px; }
+.planes-head {
+  display: flex; flex-direction: row; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border); padding: 8px 0;
+}
+.planes-title { font-size: 12px; font-weight: 600; letter-spacing: .02em; margin: 0; }
+.planes-meta {
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.planes-grid { display: flex; flex-wrap: wrap; gap: 14px; padding-top: 12px; }
+.planes-panel {
+  flex: 1 1 calc(50% - 7px); min-width: 0; box-sizing: border-box;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.planes-panel-wide { flex-basis: 100%; }
+.planes-panel-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--muted); margin: 0 0 8px;
+}
+.planes-body { min-width: 0; }
+.planes-state { font-size: 12px; color: var(--muted); margin: 6px 0; }
+.planes-caption { font-size: 10px; color: var(--muted); margin: 6px 0 0; }
+
+.planes-mini-row { display: flex; flex-direction: row; gap: 10px; }
+.planes-mini { flex: 1 1 0; min-width: 0; }
+.planes-mini-title { font-size: 10px; color: var(--muted); margin: 0 0 2px; }
+.planes-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+.planes-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.planes-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
+.planes-legend-swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.planes-legend-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.planes-scroll { overflow-x: auto; }
+.planes-heat { display: grid; gap: 2px; min-width: 620px; align-items: stretch; }
+.planes-heat-corner { height: 18px; }
+.planes-heat-head {
+  display: flex; align-items: center; justify-content: center; height: 18px;
+  padding: 0 2px; border-radius: 3px; background: var(--panel-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px;
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.planes-heat-label {
+  display: flex; align-items: center; height: 18px; padding-right: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.planes-heat-cell { height: 18px; border-radius: 3px; background: var(--panel-2); }
+
+.planes-matrix { display: grid; gap: 2px; min-width: 0; }
+.planes-matrix-corner { height: 86px; }
+.planes-matrix-head {
+  height: 86px; display: flex; align-items: center; justify-content: center;
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px;
+  color: var(--muted); overflow: hidden; white-space: nowrap;
+}
+.planes-matrix-label {
+  display: flex; align-items: center; height: 26px; padding-right: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.planes-matrix-cell {
+  display: flex; align-items: center; justify-content: center; height: 26px;
+  border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; color: var(--text);
+}
+.planes-matrix-cell.planes-diag { background: var(--panel-2); color: var(--muted); }
+
+.offline .planes-grid { opacity: .45; }
+
+@media (max-width: 900px) {
+  .planes-chips { flex-basis: 100%; }
+  .planes-panel, .planes-panel-wide { flex-basis: 100%; }
+  .planes-mini-row { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1 class="title">runs <small id="api-host"></small></h1>
+  <div class="planes-chips" id="experiment-chips" role="group" aria-label="experiment selector"></div>
+  <span class="status"><span id="conn-dot" class="dot dot-pause"></span><span id="conn-text">connecting</span></span>
+  <span class="spacer"></span>
+  <span id="updated" class="updated">&mdash;</span>
+  <button id="pause-btn" class="btn" type="button">pause</button>
+</header>
+
+<section class="stats">
+  <div class="stat"><span class="stat-value" id="n-total">0</span><span class="stat-label">total</span></div>
+  <div class="stat"><span class="stat-value running" id="n-running">0</span><span class="stat-label">running</span></div>
+  <div class="stat"><span class="stat-value waiting" id="n-waiting">0</span><span class="stat-label">waiting</span></div>
+  <div class="stat"><span class="stat-value done" id="n-done">0</span><span class="stat-label">done</span></div>
+</section>
+
+<main class="content">
+  <table class="runs">
+    <thead>
+      <tr>
+        <th class="col-id">id</th>
+        <th>experiment</th>
+        <th>model</th>
+        <th>status</th>
+        <th class="col-progress">progress</th>
+        <th class="col-samples">samples</th>
+        <th class="col-lease">lease</th>
+      </tr>
+    </thead>
+    <tbody id="runs-body"></tbody>
+  </table>
+  <p class="empty" id="empty">connecting&hellip;</p>
+
+  <section class="distribution" id="distribution" aria-label="label distribution by model">
+    <div class="distribution-head">
+      <h2 class="distribution-title">distribution</h2>
+      <span class="planes-meta" id="distribution-exp"></span>
+      <span class="spacer"></span>
+      <span class="distribution-n" id="distribution-n">n = 0</span>
+    </div>
+    <div class="distribution-rows" id="distribution-rows"></div>
+    <p class="distribution-note" id="distribution-note" hidden>analysis unavailable</p>
+  </section>
+
+  <section class="planes" id="planes" aria-label="distribution planes">
+    <div class="planes-head">
+      <h2 class="planes-title">planes</h2>
+      <span class="planes-meta" id="planes-exp"></span>
+      <span class="spacer"></span>
+      <span class="planes-meta" id="planes-source"></span>
+    </div>
+    <div class="planes-grid">
+      <div class="planes-panel planes-panel-wide">
+        <h3 class="planes-panel-title">precision axis</h3>
+        <div class="planes-body" id="planes-precision" aria-label="precision axis"></div>
+      </div>
+      <div class="planes-panel">
+        <h3 class="planes-panel-title">heatmap</h3>
+        <div class="planes-body" id="planes-heatmap" aria-label="label heatmap"></div>
+      </div>
+      <div class="planes-panel">
+        <h3 class="planes-panel-title">pairwise</h3>
+        <div class="planes-body" id="planes-pairwise" aria-label="pairwise JS distance"></div>
+      </div>
+      <div class="planes-panel planes-panel-wide">
+        <h3 class="planes-panel-title">rank curve</h3>
+        <div class="planes-body" id="planes-rank" aria-label="rank curve"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="dashboard.js"></script>
+
+
+</body>
+</html>
