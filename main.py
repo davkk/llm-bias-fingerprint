@@ -112,9 +112,15 @@ async def wait_for_model(name: str, every: int = 1, timeout: int = 30):
 
 
 async def load_model(name: str):
-    resp = await make_request("POST", "/models/load", {"model": name})
-    assert resp.get("success")
-    await wait_for_model(name)
+    for _ in range(10):
+        resp = await make_request("POST", "/models/load", {"model": name})
+        if resp.get("success"):
+            await wait_for_model(name, timeout=120)
+            return
+        # a concurrent load in flight makes the router refuse; back off and retry
+        logger.warning("model %s load refused, retrying", name)
+        await asyncio.sleep(3)
+    raise RuntimeError(f"could not load model {name}")
 
 
 async def unload_model(name: str):
