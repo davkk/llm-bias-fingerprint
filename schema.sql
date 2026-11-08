@@ -13,7 +13,7 @@ create table if not exists run (
     samples_per_prompt integer not null,
     attempts integer not null default 0,
     lease_until integer,
-    completed boolean -- null = pending/running, 1 = ok, 0 = failed
+    completed boolean not null default 0 -- 0 = pending/running, 1 = done
 );
 
 create table if not exists run_prompt (
@@ -29,5 +29,3 @@ create table if not exists sample (
     raw text not null,
     primary key (run_id, prompt_id, sample_index)
 );
-
--- TODO: add indexes for ids

@@ -7,7 +7,6 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager, closing, contextmanager
-from enum import Enum
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,7 +19,6 @@ N_WORKERS = 4
 LEASE_DURATION_S = 120
 RENEW_EVERY_S = 10
 MAX_EMPTY = 5
-MAX_ATTEMPTS = 3
 
 API_URL = os.getenv("API_URL")
 
@@ -31,23 +29,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class RunStatus(Enum):
-    RUNNING = None
-    COMPLETED = 1
-    FAILED = 0
-
-
 class RunRequest(BaseModel):
     experiment: str
     model: str
     prompts: list[str]
-    samples_per_prompt: int
-
-
-class Run(BaseModel):
-    run_id: int
-    model: str
-    prompts: list[tuple[int, str]]
     samples_per_prompt: int
 
 
@@ -81,7 +66,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-queue = asyncio.Queue()
 
 
 def make_request_sync(method: str, endpoint: str, payload: dict | None = None):
@@ -175,7 +159,7 @@ def get_runs():
 def create_run(req: RunRequest):
     with db() as conn:
         run_id = conn.execute(
-            "insert into run (experiment, model, samples_per_prompt) values (:experiment, :model, :samples_per_prompt)",
+            "insert into run (experiment, model, samples_per_prompt, completed) values (:experiment, :model, :samples_per_prompt, 0)",
             {
                 "experiment": req.experiment,
                 "model": req.model,
@@ -232,30 +216,10 @@ async def send_prompt(model: str, prompt: str):
     return resp.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
-def set_run_status(run_id: int, status: RunStatus):
-    try:
-        with db() as conn:
-            conn.execute(
-                "update run set completed = :completed where id = :run_id",
-                {"completed": status.value, "run_id": run_id},
-            )
-        return True
-    except sqlite3.Error:
-        logger.exception("Could not mark run %s as %s", run_id, status.value)
-        return False
-
-
 def claim_run():
     with db() as conn:
-        # expired and out of attempts
-        conn.execute(
-            """
-            update run set completed = 0, lease_until = null
-            where completed is null and lease_until < unixepoch() and attempts >= :max_attempts
-            """,
-            {"max_attempts": MAX_ATTEMPTS},
-        )
-        # select the next run
+        # retries indefinitely: no attempt cap, no auto-fail
+        # order by attempts so a repeatedly failing run does not block later ones
         run = conn.execute(
             """
             update run set
@@ -263,15 +227,14 @@ def claim_run():
                 lease_until = unixepoch() + :lease_s
             where id = (
                 select id from run
-                where completed is null
+                where completed = 0
                     and (lease_until is null or lease_until < unixepoch())
-                    and attempts < :max_attempts
-                order by id
+                order by attempts, id
                 limit 1
             )
             returning id, attempts, model, samples_per_prompt
             """,
-            {"max_attempts": MAX_ATTEMPTS, "lease_s": LEASE_DURATION_S},
+            {"lease_s": LEASE_DURATION_S},
         ).fetchone()
     return run
 
@@ -281,21 +244,21 @@ def renew_lease(run_id: int, attempts: int):
         cur = conn.execute(
             """
             update run set lease_until = unixepoch() + :lease_s
-            where id = :run_id and attempts = :attempts and completed is null
+            where id = :run_id and attempts = :attempts and completed = 0
             """,
             {"lease_s": LEASE_DURATION_S, "run_id": run_id, "attempts": attempts},
         )
     return cur.rowcount == 1
 
 
-def finish_run(run_id: int, attempts: int, status: RunStatus):
+def finish_run(run_id: int, attempts: int):
     with db() as conn:
         cur = conn.execute(
             """
-            update run set completed = :completed, lease_until = null
-            where id = :run_id and attempts = :attempts and completed is null
+            update run set completed = 1, lease_until = null
+            where id = :run_id and attempts = :attempts and completed = 0
             """,
-            {"completed": status.value, "run_id": run_id, "attempts": attempts},
+            {"run_id": run_id, "attempts": attempts},
         )
     return cur.rowcount == 1
 
@@ -347,10 +310,11 @@ async def renew_loop(run_id: int, attempts: int):
             logger.warning("Could not renew run %s with attempts %s", run_id, attempts)
 
 
-async def process_run(run_id: int, model: str, samples_per_prompt: int):
+async def process_run(run_id: int, model: str, samples_per_prompt: int, status: dict):
     if not await is_model_loaded(model):
         await load_model(model)
     work = await asyncio.to_thread(load_run_work, run_id)
+    status["completed"] = True
     for row in work:
         prompt_id = row["prompt_id"]
         prompt = row["content"]
@@ -365,6 +329,9 @@ async def process_run(run_id: int, model: str, samples_per_prompt: int):
                 continue
             yield Sample(run_id=run_id, prompt_id=prompt_id, sample_index=idx, raw=raw)
             idx += 1
+        if empty >= MAX_EMPTY and idx < samples_per_prompt:
+            # hit the empty cap before finishing this prompt -> not a complete run
+            status["completed"] = False
 
 
 async def worker():
@@ -378,17 +345,18 @@ async def worker():
         model = run["model"]
         n = run["samples_per_prompt"]
         hb = asyncio.create_task(renew_loop(run_id, attempts))
+        status = {"completed": True}
         try:
-            async for sample in process_run(run_id, model, n):
+            async for sample in process_run(run_id, model, n, status):
                 await asyncio.to_thread(save_sample, sample)
-            await asyncio.to_thread(finish_run, run_id, attempts, RunStatus.COMPLETED)
-            logger.info("Run %s completed", run_id)
+            if status["completed"]:
+                await asyncio.to_thread(finish_run, run_id, attempts)
+                logger.info("Run %s completed", run_id)
+            else:
+                logger.warning("Run %s hit empty cap; leaving incomplete for retry", run_id)
         except Exception:
             logger.exception("Run %s failed on attempt %s", run_id, attempts)
-            if attempts >= MAX_ATTEMPTS:
-                await asyncio.to_thread(finish_run, run_id, attempts, RunStatus.FAILED)
-                logger.error("Run %s failed too many times", run_id)
-            # else: leave completed null - lease expires, another worker may pick it up
+            # leave completed = 0 so lease expiry re-queues the run (retry indefinitely)
         finally:
             # TODO: unload model once all runs are done
             hb.cancel()
