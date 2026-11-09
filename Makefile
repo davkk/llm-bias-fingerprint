@@ -1,9 +1,4 @@
-EXPERIMENT ?= smoke
-MODEL   ?= Qwen3.5-4B-Q4_0
-PROMPT  ?= random number from 1 to 100
-SAMPLES ?= 10
-
-.PHONY: run backend check test measure clean
+.PHONY: run backend server check test clean
 
 run:
 	uv run fastapi dev
@@ -19,12 +14,13 @@ check:
 	ty check --output-format=concise .
 	ruff check --output-format=concise .
 
-measure: ## start a run, e.g. make measure PROMPT="random color" SAMPLES=50
-	curl -sf -X POST localhost:8000/runs -H 'content-type: application/json' \
-		-d '{"experiment":"$(EXPERIMENT)","model":"$(MODEL)","prompts":["$(PROMPT)"],"samples_per_prompt":$(SAMPLES)}' \
-		2>/dev/null \
-	| jq
-
+server: ## launch the project llama-server in the background
+	mkdir -p .run llama/models
+	for model in Qwen3.5-4B-Q3_K_M Qwen3.5-4B-Q4_0 Qwen3.5-4B-Q5_K_M Qwen3.5-4B-Q6_K Qwen3.5-4B-Q8_0; do \
+		ln -sfn "$(HOME)/models/$$model.gguf" "llama/models/$$model.gguf"; \
+	done
+	nohup llama-server --host 127.0.0.1 --port 8013 --models-dir llama/models --models-max 3 --parallel 3 --ctx-size 8192 --threads 8 --fit on --fit-target 3200 --fit-ctx 4096 --no-models-autoload > .run/llama-server.log 2>&1 &
+	echo $$! > .run/llama-server.pid
 
 clean: ## remove caches
 	rm -rf __pycache__ .ruff_cache

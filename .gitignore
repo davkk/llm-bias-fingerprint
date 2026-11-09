@@ -13,3 +13,7 @@ wheels/
 data/
 
 *.db*
+
+# project llama-server runtime state and generated model links
+.run/
+llama/models/

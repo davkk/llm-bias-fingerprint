@@ -13,7 +13,12 @@ create table if not exists run (
     samples_per_prompt integer not null,
     attempts integer not null default 0,
     lease_until integer,
-    completed boolean not null default 0 -- 0 = pending/running, 1 = done
+    status text not null default 'pending' check (status in ('pending', 'done', 'failed')),
+    name text,
+    answer_type text,
+    temperature real not null default 1.0,
+    top_p real not null default 1.0,
+    reasoning_effort text
 );
 
 create table if not exists run_prompt (
