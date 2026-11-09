@@ -1,0 +1,12 @@
+name: smoke
+experiment: number
+answer_type: number
+models:
+  - Qwen3.5-4B-Q4_0
+prompts:
+  - random number between 1 and 100
+samples_per_prompt: 3
+params:
+  temperature: 1.0
+  top_p: 1.0
+  reasoning_effort: null

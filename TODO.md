@@ -15,8 +15,8 @@ research jobs into declarative YAML.
 
 1. `sample.raw` is the contract; never store derived data.
 2. The sampler must never import analysis or web code.
-3. Memory safety is server-side (`--fit`, `--models-max`) plus OS-side (cgroup);
-   the app only avoids triggering bad states.
+3. Memory safety is server-side (`--fit`, `--models-max`); OS-side cgroup is
+   optional (manual scope). The app only avoids triggering bad states.
 
 ## Target layout
 
@@ -31,17 +31,16 @@ llm-bias-fingerprint/
 ├── llama/presets.ini         # project-only model list
 └── src/llm_bias/
     ├── config.py             # SYSTEM_PROMPT, paths, limits, env
-    ├── db.py                 # db(), db_ro(), init_db(), migrate()
+    ├── db.py                 # db(), db_ro(), init_db()
     ├── models.py             # Sample, RunRequest, JobSpec, RunParams
     ├── runs.py               # create/claim/renew/finish/load_work
     ├── sampling.py           # llama HTTP client only
     ├── sampler.py            # worker loop, model gate, save_sample
     ├── model_manager.py      # load/unload lock, health, idle unload
-    ├── server.py             # project llama-server start/stop/status
     ├── analysis.py           # normalize/parse/aggregate, read-only
     ├── jobspec.py            # YAML load + strict validation
     ├── web.py                # create_app(), routes, static mount
-    └── cli.py                # job / server commands
+    └── cli.py                # job commands
 ```
 
 Import direction:
@@ -73,59 +72,63 @@ Done when: the app starts from any CWD and behaves identically.
 
 ## Phase 2 - Schema and migrations
 
-- [ ] Add `run.config` (JSON snapshot of resolved params) and `run.name` (batch identity).
-- [ ] Keep `completed` boolean default `0`; no failed state.
-- [ ] Add `db.migrate()` with idempotent `ALTER TABLE ADD COLUMN` guarded by
-      `pragma table_info`.
-- [ ] Optional indexes only if measured: `(completed, lease_until)` for claiming.
+- [ ] Add run params as columns (`temperature`, `top_p`, `max_tokens`, `seed`,
+      `enable_thinking`, `reasoning_effort`) and `run.name` (batch identity).
+- [ ] Add `run.answer_type` (text, nullable) capturing the expected answer type
+      (e.g. `number`, `word`); analysis picks the parser from it instead of
+      hardcoding experiment names.
+- [x] `status` text enum (`pending`/`done`/`failed`); failed state after `MAX_ATTEMPTS` (5).
+- [ ] No migrations: schema.sql carries every column; an outdated DB is recreated
+      (data.db is gitignored and disposable).
+- [ ] Optional indexes only if measured: `(status, lease_until)` for claiming.
 
-Done when: fresh DB and migrated DB have the same shape; existing rows preserved.
+Done when: a fresh DB has the full schema; recreating data.db is the migration
+path.
 
 ## Phase 3 - Project-owned llama-server
 
-- [ ] `llama/presets.ini` listing only the project's quants.
-- [ ] `server.py` builds the command from `config.py`:
-      dedicated host/port, `--fit on`, `--fit-target` if supported,
-      `--models-max 1` (or `2`), `--parallel` matched to sampler concurrency,
-      base `ctx` 4096-8192, dedicated log/PID paths.
-- [ ] CLI: `llm-bias server start|stop|status|logs`.
+- [ ] `llama/models/` symlinks listing only the project's quants.
+- [ ] README documents the direct `llama-server` command:
+      dedicated host/port, `--fit on`, `--fit-target`, `--models-max 3`,
+      `--parallel` matched to sampler concurrency, base `ctx` 4096-8192.
+- [ ] No CLI wrapper for the server.
 - [ ] systemd user unit with `MemoryHigh`, `MemoryMax`, `OOMScoreAdjust=500`;
       optionally `systemd-oomd` / `earlyoom`.
 - [ ] `.env` `API_URL` points at the project port.
 - [ ] Document coexistence with the global `llamad`: keep quants exclusive or
       stop the global server during experiments.
 
-Done when: `server status` shows resident models, effective `/props`, and
-`MemAvailable`, and the cgroup limit is enforced.
+Done when: `server status` shows resident models and effective `/props`.
 
 ## Phase 4 - Sampler model gate
 
-- [ ] One `asyncio.Lock` around load/unload, so duplicate load requests cannot race.
-- [ ] One active model at a time: claim only runs matching the loaded model;
-      otherwise load the next group. Avoids `models-max` evict/reload churn.
-- [ ] Do not add a `/proc/meminfo` admission gate; server fit/models-max is the
-      primary control. Log `MemAvailable` before load as a diagnostic only.
-- [ ] Unload when the queue is empty (fulfils the existing TODO and frees RAM for
-      the global server).
+- [x] One `asyncio.Lock` around load/unload, so duplicate load requests cannot race.
+- [x] Workers equal `models-max` (3/3), so no model gate is needed; the router owns
+      capacity and eviction.
+- [x] Do not add a `/proc/meminfo` admission gate; server fit/models-max is the
+      primary control. No memory diagnostics needed.
+- [x] Unload a model when no worker uses it and no pending runs for that model remain.
 - [ ] Fail a run with a clear message if `API_URL` is unreachable; leave it queued.
 
-Done when: four workers never request four different models, and server-down or
+Done when: three workers never request more than three models, and server-down or
 low-memory leaves runs queued rather than crashing.
 
 ## Phase 5 - YAML job specs and CLI
 
-- [ ] `jobspec.py`: strict Pydantic schema (`extra="forbid"`).
-- [ ] Global `SYSTEM_PROMPT` in `config.py` (common to all experiments; not in YAML).
-- [ ] Snapshot the resolved config plus system prompt into `run.config`.
-- [ ] CLI: `job run FILE [--dry-run] [--force]`, `job list`, `job status`.
-- [ ] Dedupe by `run.name`: refuse if it already exists unless `--force`.
-- [ ] Replace `qwen35.sh` with YAML files.
+- [x] `jobspec.py`: strict Pydantic schema (`extra="forbid"`), including an
+      `answer_type` field (e.g. `number`, `word`) propagated to `run.answer_type`.
+- [x] Global `SYSTEM_PROMPT` in `config.py` (common to all experiments; not in YAML).
+- [x] Snapshot the resolved config plus system prompt into `run.config`.
+- [x] CLI: `job run FILE [--dry-run] [--force]`, `job list`, `job status`.
+- [x] Dedupe by `run.name`: refuse if it already exists unless `--force`.
+- [x] Replace `qwen35.sh` with YAML files.
 
 YAML shape (one file = one batch, params shared by all models):
 
 ```yaml
 name: qwen35-number-t1
 experiment: number
+answer_type: number
 models:
   - Qwen3.5-4B-Q3_K_M
   - Qwen3.5-4B-Q4_0
@@ -163,6 +166,8 @@ resumes via lease expiry.
 ## Phase 7 - Read-only analysis and dashboard
 
 - [ ] `db_ro()` (`file:data.db?mode=ro`) for GET endpoints and `/analysis`.
+- [ ] Analysis selects the parser from `run.answer_type` (falling back to
+      `experiment` for legacy rows) instead of hardcoding experiment names.
 - [ ] Dashboard shows server status and effective model limits (optional).
 - [ ] Add `/health` for web and sampler.
 - [ ] Add analysis caching only if request cost becomes visible; do not
@@ -179,15 +184,14 @@ Done when: analysis physically cannot write, and the dashboard degrades to
       - fresh DB vs migrated DB
       - kill -9 the sampler mid-run: run resumes
       - server down: runs stay queued, no crash
-      - memory pressure with `models-max 1` + cgroup: server is killed, system
+      - memory pressure with `models-max 3`: server is killed by OOM, system
         stays responsive
       - re-running the same YAML: dedupe works
 - [ ] README/runbook: ports, units, start/stop, where YAML lives.
 
 ## Decisions to lock
 
-- [ ] `models-max`: `1` (safest, reload between quants) or `2` (overlap, more memory).
+- [x] `models-max`: `3`, matching `N_WORKERS = 3`.
 - [ ] Dedupe: refuse by default, `--force` creates another batch.
-- [ ] Idle unload: unload when the queue empties, or keep the last model warm for
-      a grace period.
+- [x] Idle unload: unload when no worker uses the model and no pending runs remain.
 - [ ] `run.name` first; add a `job` table only if per-batch metadata is needed.

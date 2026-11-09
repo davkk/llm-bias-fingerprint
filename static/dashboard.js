@@ -168,7 +168,8 @@ const analysisCache = new Map(); // experiment -> { reg, regRaw, val, valRaw }
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 function statusOf(run) {
-  if (run.completed === 1) return "done";
+  if (run.status === "failed") return "failed";
+  if (run.status === "done") return "done";
   if (run.lease_until == null) return "pending";
   return run.lease_until > nowSec() ? "running" : "stalled";
 }
@@ -301,7 +302,7 @@ function render(runs) {
   }
   for (const key of Object.keys(counters)) counters[key].textContent = String(counts[key]);
 
-  setEmpty(runs.length ? null : "no runs yet \u2014 POST /runs or run make measure");
+  setEmpty(runs.length ? null : "no runs yet \u2014 POST /runs");
 }
 
 function renderPrompts(el, prompts) {
