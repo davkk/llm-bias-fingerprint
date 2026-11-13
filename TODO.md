@@ -94,3 +94,7 @@ Done when: the dashboard can degrade to "offline" when the API is down.
 - `presets.ini` (generation params are per request; server configured by CLI flags).
 - Legacy fallback for `answer_type` (no backward compat; current schema is the base;
   old DBs are recreated).
+- `enable_thinking` as a stored param (`enable_thinking` is derived from
+  `reasoning_effort` in `sampling.send_prompt`).
+- `max_tokens` as a per-run param (constant `config.MAX_TOKENS` for the whole
+  program; not stored).

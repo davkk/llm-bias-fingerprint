@@ -8,6 +8,8 @@ load_dotenv(ROOT / ".env")
 
 SYSTEM_PROMPT = "respond only with a number or a word that the user asks for"
 
+MAX_TOKENS = 16
+
 N_WORKERS = 3
 LEASE_DURATION_S = 120
 RENEW_EVERY_S = 10

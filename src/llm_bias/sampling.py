@@ -46,10 +46,9 @@ async def send_prompt(model: str, prompt: str, params: dict | None = None):
         "messages": messages,
         "temperature": params.get("temperature", 1.0),
         "top_p": params.get("top_p", 1.0),
-        "max_tokens": params.get("max_tokens", 16),
+        "max_tokens": config.MAX_TOKENS,
         "chat_template_kwargs": {
-            "enable_thinking": params.get("enable_thinking", False)
-            or params.get("reasoning_effort") is not None,
+            "enable_thinking": params.get("reasoning_effort") is not None,
         },
     }
     if params.get("seed") is not None:

@@ -56,9 +56,7 @@ def _job_run(args: argparse.Namespace) -> int:
             name=spec.name,
             temperature=spec.params.temperature,
             top_p=spec.params.top_p,
-            max_tokens=spec.params.max_tokens,
             seed=spec.params.seed,
-            enable_thinking=spec.params.enable_thinking,
             reasoning_effort=spec.params.reasoning_effort,
         )
         run_ids.append(create_run(req))

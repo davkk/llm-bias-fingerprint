@@ -7,9 +7,9 @@ def create_run(req: RunRequest):
     with db() as conn:
         run_id = conn.execute(
             "insert into run (experiment, model, samples_per_prompt, status, name, answer_type, "
-            "temperature, top_p, max_tokens, seed, enable_thinking, reasoning_effort) "
+            "temperature, top_p, seed, reasoning_effort) "
             "values (:experiment, :model, :samples_per_prompt, :status, :name, :answer_type, "
-            ":temperature, :top_p, :max_tokens, :seed, :enable_thinking, :reasoning_effort)",
+            ":temperature, :top_p, :seed, :reasoning_effort)",
             {
                 "experiment": req.experiment,
                 "model": req.model,
@@ -19,9 +19,7 @@ def create_run(req: RunRequest):
                 "answer_type": req.answer_type.value if req.answer_type is not None else None,
                 "temperature": req.temperature,
                 "top_p": req.top_p,
-                "max_tokens": req.max_tokens,
                 "seed": req.seed,
-                "enable_thinking": 1 if req.enable_thinking else 0,
                 "reasoning_effort": req.reasoning_effort,
             },
         ).lastrowid
@@ -139,7 +137,7 @@ def load_run_config(run_id: int) -> dict:
     with db() as conn:
         row = conn.execute(
             """
-            select temperature, top_p, max_tokens, seed, enable_thinking, reasoning_effort
+            select temperature, top_p, seed, reasoning_effort
             from run where id = :run_id
             """,
             {"run_id": run_id},
@@ -149,9 +147,7 @@ def load_run_config(run_id: int) -> dict:
     return {
         "temperature": row["temperature"],
         "top_p": row["top_p"],
-        "max_tokens": row["max_tokens"],
         "seed": row["seed"],
-        "enable_thinking": bool(row["enable_thinking"]),
         "reasoning_effort": row["reasoning_effort"],
     }
 

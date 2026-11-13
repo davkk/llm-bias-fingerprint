@@ -18,9 +18,7 @@ create table if not exists run (
     answer_type text,
     temperature real not null default 1.0,
     top_p real not null default 1.0,
-    max_tokens integer not null default 16,
     seed integer,
-    enable_thinking integer not null default 0,
     reasoning_effort text
 );
 
