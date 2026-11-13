@@ -7,7 +7,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from llm_bias import analysis, config
+from llm_bias import analysis, config, queries
 from llm_bias.db import db, init_db
 
 
@@ -244,12 +244,7 @@ def fig_precision(models):
 def prompt_models(experiment: str | None = None):
     """Per (model, prompt) label distributions."""
     with db() as conn:
-        query = """
-            select run.model, prompt.content as prompt, sample.raw
-            from sample
-            join run on sample.run_id = run.id
-            join prompt on sample.prompt_id = prompt.id
-        """
+        query = queries.GET_PROMPT_MODELS
         params = {}
         if experiment is not None:
             query += " where run.experiment = :experiment"

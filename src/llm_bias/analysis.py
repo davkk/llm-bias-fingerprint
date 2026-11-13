@@ -1,5 +1,6 @@
 import re
 
+from llm_bias import queries
 from llm_bias.db import db_ro
 from llm_bias.models import AnswerType
 
@@ -30,17 +31,7 @@ def get_analysis(experiment: str | None = None, by: str | None = None) -> dict:
     """Label distribution per run, per model, and overall."""
     by_value = by == "value"
     with db_ro() as conn:
-        query = """
-                select
-                    run.id,
-                    run.experiment,
-                    run.model,
-                    run.status,
-                    run.answer_type,
-                    sample.raw
-                from sample
-                join run on sample.run_id = run.id
-            """
+        query = queries.GET_ANALYSIS
         params: dict[str, str] = {}
         if experiment is not None:
             query += " where run.experiment = :experiment"

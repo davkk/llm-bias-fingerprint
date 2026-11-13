@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
-from llm_bias import analysis, config
+from llm_bias import analysis, config, queries
 from llm_bias.db import db_ro, init_db
 from llm_bias.models import RunRequest
 from llm_bias.runs import create_run, delete_run
@@ -35,17 +35,11 @@ def create_app(start_workers: bool = True) -> FastAPI:
     def get_prompts(run_id: int):
         try:
             with db_ro() as conn:
-                run = conn.execute("select 1 from run where id = :run_id", {"run_id": run_id}).fetchone()
+                run = conn.execute(queries.RUN_EXISTS, {"run_id": run_id}).fetchone()
                 if not run:
                     raise HTTPException(status_code=404, detail="Run not found")
                 rows = conn.execute(
-                    """
-                select prompt.content
-                from run_prompt
-                join prompt on run_prompt.prompt_id = prompt.id
-                where run_prompt.run_id = :run_id
-                order by prompt.id
-                """,
+                    queries.GET_PROMPTS,
                     {"run_id": run_id},
                 ).fetchall()
                 return [row["content"] for row in rows]
@@ -64,12 +58,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
                 if not run:
                     raise HTTPException(status_code=404, detail="Run not found")
                 return conn.execute(
-                    """
-                select experiment, model, content as prompt, raw from sample
-                join prompt on sample.prompt_id = prompt.id
-                join run on sample.run_id = run.id
-                where run_id = :run_id
-                """,
+                    queries.GET_SAMPLES,
                     {"run_id": run_id},
                 ).fetchall()
         except sqlite3.Error:
@@ -80,9 +69,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
     def get_runs():
         try:
             with db_ro() as conn:
-                return conn.execute(
-                    "select id, experiment, model, samples_per_prompt, lease_until, status, name, answer_type from run"
-                ).fetchall()
+                return conn.execute(queries.GET_RUNS).fetchall()
         except sqlite3.Error:
             logger.exception("Error getting runs")
             raise HTTPException(status_code=500, detail="Internal database error")
@@ -92,23 +79,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
         """Per-run progress: samples written vs samples expected."""
         try:
             with db_ro() as conn:
-                return conn.execute(
-                    """
-                select
-                    run.id,
-                    run.experiment,
-                    run.model,
-                    run.name,
-                    run.samples_per_prompt,
-                    run.status,
-                    run.lease_until,
-                    (select count(*) from run_prompt where run_prompt.run_id = run.id) as n_prompts,
-                    (select count(*) from sample where sample.run_id = run.id) as n_samples,
-                    (select group_concat(raw, ', ') from (select raw from sample where sample.run_id = run.id order by id)) as all_values
-                from run
-                order by run.id desc
-                """
-                ).fetchall()
+                return conn.execute(queries.GET_PROGRESS).fetchall()
         except sqlite3.Error:
             logger.exception("Error getting run progress")
             raise HTTPException(status_code=500, detail="Internal database error")

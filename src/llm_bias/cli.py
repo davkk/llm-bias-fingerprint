@@ -5,6 +5,7 @@ import sys
 import yaml
 from pydantic import ValidationError
 
+from llm_bias import queries
 from llm_bias.db import db, init_db
 from llm_bias.jobspec import load_job_spec, resolved_config
 from llm_bias.models import RunRequest
@@ -96,7 +97,7 @@ def _report(args: argparse.Namespace) -> int:
     out_dir = args.out_dir
     if args.all or args.experiment is None:
         with db() as conn:
-            names = [r["experiment"] for r in conn.execute("select distinct experiment from run").fetchall()]
+            names = [r["experiment"] for r in conn.execute(queries.GET_DISTINCT_EXPERIMENTS).fetchall()]
         if not names:
             print("no experiments found", file=sys.stderr)
             return 1
