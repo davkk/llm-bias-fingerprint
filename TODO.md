@@ -1,20 +1,7 @@
 # TODO
 
-Roadmap for separating data gathering from data analysis, and for turning
-research jobs into declarative YAML.
-
-## Current state
-
-- [x] `completed` is a boolean, default `0`; unfinished runs stay queued and retry.
-- [x] Runs are claimed in `(attempts, id)` order, so a bad run cannot starve later ones.
-- [x] `sample` stores `raw` only; labels/values are computed at read time in `/analysis`.
-- [x] Dashboard is served by FastAPI at `/`; dashboard and analysis endpoints exist.
-- [x] No attempt cap, no persistent failed state.
-
-## Ideas / future
-
-- Save top-k logits/probabilities per prompt instead of (or in addition to) many samples, so one completion yields a distribution over labels and reduces sampling cost. Requires sampler + schema changes; analysis would weight by probability.
-- what is the point of lease again? can it keep refreshing? can we lower the lease time? once one worker finishes, it waits for the lease time to expire before taking up another run
+Remaining work for llm-bias-fingerprint. Completed items and dropped decisions
+removed; see git history for what was done.
 
 ## Principles
 
@@ -22,6 +9,9 @@ research jobs into declarative YAML.
 2. The sampler must never import analysis or web code.
 3. Memory safety is server-side (`--fit`, `--models-max`); OS-side cgroup is
    optional (manual scope). The app only avoids triggering bad states.
+4. Import direction is documented only (not enforced by tooling):
+   `config, models` leaves; `db`; `runs, sampling`; `model_manager`; `analysis`
+   (read-only); `sampler`; `jobspec, cli`; `web`.
 
 ## Target layout
 
@@ -31,172 +21,76 @@ llm-bias-fingerprint/
 ├── .env                      # API_URL, llama host/port
 ├── Makefile                  # web / sampler / dev / server
 ├── data.db                   # gitignored
-├── static/                   # index.html, dashboard.js
+├── static/                   # index.html, dashboard.js, reports/
 ├── experiments/              # YAML job specs
-├── llama/presets.ini         # project-only model list
+├── llama/models/             # generated, gitignored symlinks to ~/models
 └── src/llm_bias/
     ├── config.py             # SYSTEM_PROMPT, paths, limits, env
     ├── db.py                 # db(), db_ro(), init_db()
     ├── models.py             # Sample, RunRequest, JobSpec, RunParams
     ├── runs.py               # create/claim/renew/finish/load_work
     ├── sampling.py           # llama HTTP client only
-    ├── sampler.py            # worker loop, model gate, save_sample
-    ├── model_manager.py      # load/unload lock, health, idle unload
+    ├── sampler.py            # worker loop, save_sample
+    ├── model_manager.py      # load/unload lock, idle unload
     ├── analysis.py           # normalize/parse/aggregate, read-only
     ├── jobspec.py            # YAML load + strict validation
     ├── web.py                # create_app(), routes, static mount
-    └── cli.py                # job commands
+    ├── cli.py                # job commands
+    └── report.py             # plotly report generation
 ```
 
-Import direction:
+## Remaining work
 
-```
-config, models                 leaves
-db                             <- config
-runs, sampling                 <- db, models, config
-model_manager                  <- config, sampling
-analysis                       <- db_ro, models
-sampler                        <- runs, sampling, model_manager
-jobspec, cli                   <- runs, jobspec, models
-web                            <- runs, analysis, static
-```
+### A. Process split
 
-`sampler` must never import `analysis` or `web`; `analysis` must never import
-FastAPI or the sampler.
+- [ ] `sampler.py` becomes its own entrypoint (`__main__`/`main`).
+- [ ] `web.create_app(start_workers=False)` by default; single-process dev mode
+      behind a flag.
+- [ ] Makefile targets `web` and `sampler` (keep `dev` and `server`).
 
-## Phase 1 - Package extraction (no behavior change)
+Done when: restarting the web server does not interrupt sampling; restarting
+the sampler resumes via lease expiry.
 
-- [ ] Create `src/llm_bias/` and move code into the modules above.
-- [ ] Move `schema.sql` into the package; resolve all paths from `Path(__file__)` /
-      `config.ROOT`, not CWD.
-- [ ] Root `main.py` becomes a thin `from llm_bias.web import app`.
-- [ ] Add `[project.scripts] llm-bias = "llm_bias.cli:main"`.
-- [ ] Enforce the import direction above.
+### B. Health
 
-Done when: the app starts from any CWD and behaves identically.
+- [ ] Add `/health` to web and sampler.
 
-## Phase 2 - Schema and migrations
+Done when: the dashboard can degrade to "offline" when the API is down.
 
-- [ ] Add run params as columns (`temperature`, `top_p`, `max_tokens`, `seed`,
-      `enable_thinking`, `reasoning_effort`) and `run.name` (batch identity).
-- [ ] Add `run.answer_type` (text, nullable) capturing the expected answer type
-      (e.g. `number`, `word`); analysis picks the parser from it instead of
-      hardcoding experiment names.
-- [x] `status` text enum (`pending`/`done`/`failed`); failed state after `MAX_ATTEMPTS` (5).
-- [ ] No migrations: schema.sql carries every column; an outdated DB is recreated
-      (data.db is gitignored and disposable).
-- [ ] Optional indexes only if measured: `(status, lease_until)` for claiming.
+### C. Observability
 
-Done when: a fresh DB has the full schema; recreating data.db is the migration
-path.
+- [ ] Configure logging in the sampler process (currently none).
+- [ ] Log rotation for server/sampler/web.
 
-## Phase 3 - Project-owned llama-server
+### D. Operations and verification
 
-- [ ] `llama/models/` symlinks listing only the project's quants.
-- [ ] README documents the direct `llama-server` command:
-      dedicated host/port, `--fit on`, `--fit-target`, `--models-max 3`,
-      `--parallel` matched to sampler concurrency, base `ctx` 4096-8192.
-- [ ] No CLI wrapper for the server.
-- [ ] systemd user unit with `MemoryHigh`, `MemoryMax`, `OOMScoreAdjust=500`;
-      optionally `systemd-oomd` / `earlyoom`.
-- [ ] `.env` `API_URL` points at the project port.
-- [ ] Document coexistence with the global `llamad`: keep quants exclusive or
-      stop the global server during experiments.
-
-Done when: `server status` shows resident models and effective `/props`.
-
-## Phase 4 - Sampler model gate
-
-- [x] One `asyncio.Lock` around load/unload, so duplicate load requests cannot race.
-- [x] Workers equal `models-max` (3/3), so no model gate is needed; the router owns
-      capacity and eviction.
-- [x] Do not add a `/proc/meminfo` admission gate; server fit/models-max is the
-      primary control. No memory diagnostics needed.
-- [x] Unload a model when no worker uses it and no pending runs for that model remain.
-- [ ] Fail a run with a clear message if `API_URL` is unreachable; leave it queued.
-
-Done when: three workers never request more than three models, and server-down or
-low-memory leaves runs queued rather than crashing.
-
-## Phase 5 - YAML job specs and CLI
-
-- [x] `jobspec.py`: strict Pydantic schema (`extra="forbid"`), including an
-      `answer_type` field (e.g. `number`, `word`) propagated to `run.answer_type`.
-- [x] Global `SYSTEM_PROMPT` in `config.py` (common to all experiments; not in YAML).
-- [x] Snapshot the resolved config plus system prompt into `run.config`.
-- [x] CLI: `job run FILE [--dry-run] [--force]`, `job list`, `job status`.
-- [x] Dedupe by `run.name`: refuse if it already exists unless `--force`.
-- [x] Replace `qwen35.sh` with YAML files.
-
-YAML shape (one file = one batch, params shared by all models):
-
-```yaml
-name: qwen35-number-t1
-experiment: number
-answer_type: number
-models:
-  - Qwen3.5-4B-Q3_K_M
-  - Qwen3.5-4B-Q4_0
-  - Qwen3.5-4B-Q5_K_M
-  - Qwen3.5-4B-Q6_K
-  - Qwen3.5-4B-Q8_0
-prompts:
-  - random number between 1 and 100
-  - give me a number
-samples_per_prompt: 100
-params:
-  temperature: 1.0
-  top_p: 1.0
-  max_tokens: 16
-  seed: 0
-  chat_template_kwargs:
-    enable_thinking: false
-  reasoning_effort: none
-```
-
-Done when: one command expands a file into runs, `--dry-run` prints the plan,
-and re-running refuses without `--force`.
-
-## Phase 6 - Process split
-
-- [ ] `sampler.py` becomes its own entrypoint; `web.create_app(start_workers=False)`
-      by default.
-- [ ] Keep a single-process dev mode behind a flag.
-- [ ] Makefile targets (`web`, `sampler`, `dev`, `server`) and systemd units for
-      web + sampler.
-
-Done when: restarting web does not interrupt sampling; restarting the sampler
-resumes via lease expiry.
-
-## Phase 7 - Read-only analysis and dashboard
-
-- [ ] `db_ro()` (`file:data.db?mode=ro`) for GET endpoints and `/analysis`.
-- [ ] Analysis selects the parser from `run.answer_type` (falling back to
-      `experiment` for legacy rows) instead of hardcoding experiment names.
-- [ ] Dashboard shows server status and effective model limits (optional).
-- [ ] Add `/health` for web and sampler.
-- [ ] Add analysis caching only if request cost becomes visible; do not
-      reintroduce derived columns.
-
-Done when: analysis physically cannot write, and the dashboard degrades to
-"offline" when the API is down.
-
-## Phase 8 - Operations and verification
-
-- [ ] Log files for server/sampler/web; rotation.
-- [ ] Backup policy: `sqlite3 .backup` or a file copy while WAL-checkpointed.
-- [ ] Manual verification:
-      - fresh DB vs migrated DB
+- [ ] Backup policy: `sqlite3 .backup` or a WAL-checkpointed file copy.
+- [ ] Manual verification checklist (updated for current reality: 5 model slots,
+      no systemd, no `/proc` gate):
+      - fresh DB vs. recreated DB
       - kill -9 the sampler mid-run: run resumes
       - server down: runs stay queued, no crash
-      - memory pressure with `models-max 3`: server is killed by OOM, system
-        stays responsive
       - re-running the same YAML: dedupe works
-- [ ] README/runbook: ports, units, start/stop, where YAML lives.
+- [ ] README/runbook: confirm ports, start/stop, and YAML location are accurate.
 
-## Decisions to lock
+### E. Optional / future
 
-- [x] `models-max`: `3`, matching `N_WORKERS = 3`.
-- [ ] Dedupe: refuse by default, `--force` creates another batch.
-- [x] Idle unload: unload when no worker uses the model and no pending runs remain.
-- [ ] `run.name` first; add a `job` table only if per-batch metadata is needed.
+- [ ] Dashboard shows server status and effective model limits.
+- [ ] Analysis caching only if request cost becomes visible.
+- [ ] Save top-k logits/probabilities per prompt instead of (or in addition to)
+      many samples, so one completion yields a distribution over labels and
+      reduces sampling cost. Requires sampler + schema changes; analysis would
+      weight by probability.
+
+## Dropped / decided (not doing)
+
+- systemd units for the project server (user decision: no systemd).
+- `/proc/meminfo` admission gate (server `--fit`/`--models-max` is the control).
+- `models-max 3` matching `N_WORKERS 3` (now 5 slots for 5 quants; 3 workers).
+- Enforced import-direction tooling (documentation only).
+- Lease/backoff code change (decided no change; stalls traced to reload killing
+  workers and model eviction).
+- Attempt cap removal (the `failed` state after `MAX_ATTEMPTS` is intentional).
+- `presets.ini` (generation params are per request; server configured by CLI flags).
+- Legacy fallback for `answer_type` (no backward compat; current schema is the base;
+  old DBs are recreated).
