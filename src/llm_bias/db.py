@@ -18,6 +18,18 @@ def db():
         yield conn
 
 
+def db_ro_conn():
+    conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@contextmanager
+def db_ro():
+    with closing(db_ro_conn()) as conn:
+        yield conn
+
+
 def init_db():
     schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
     with db() as conn:

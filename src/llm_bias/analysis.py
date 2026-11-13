@@ -1,6 +1,6 @@
 import re
 
-from llm_bias.db import db
+from llm_bias.db import db_ro
 from llm_bias.models import AnswerType
 
 
@@ -29,7 +29,7 @@ def parse_value(answer_type: str | None, text: str) -> int | None:
 def get_analysis(experiment: str | None = None, by: str | None = None) -> dict:
     """Label distribution per run, per model, and overall."""
     by_value = by == "value"
-    with db() as conn:
+    with db_ro() as conn:
         query = """
                 select
                     run.id,

@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
 from llm_bias import analysis, config
-from llm_bias.db import db, init_db
+from llm_bias.db import db_ro, init_db
 from llm_bias.models import RunRequest
 from llm_bias.runs import create_run, delete_run
 from llm_bias.sampler import worker
@@ -34,7 +34,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
     @app.get("/prompts")
     def get_prompts(run_id: int):
         try:
-            with db() as conn:
+            with db_ro() as conn:
                 run = conn.execute("select 1 from run where id = :run_id", {"run_id": run_id}).fetchone()
                 if not run:
                     raise HTTPException(status_code=404, detail="Run not found")
@@ -56,7 +56,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
     @app.get("/samples")
     def get_samples(run_id: int):
         try:
-            with db() as conn:
+            with db_ro() as conn:
                 run = conn.execute(
                     "select 1 from run where id = :run_id",
                     {"run_id": run_id},
@@ -79,7 +79,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
     @app.get("/runs")
     def get_runs():
         try:
-            with db() as conn:
+            with db_ro() as conn:
                 return conn.execute(
                     "select id, experiment, model, samples_per_prompt, lease_until, status, name, answer_type from run"
                 ).fetchall()
@@ -91,7 +91,7 @@ def create_app(start_workers: bool = True) -> FastAPI:
     def get_progress():
         """Per-run progress: samples written vs samples expected."""
         try:
-            with db() as conn:
+            with db_ro() as conn:
                 return conn.execute(
                     """
                 select
