@@ -126,6 +126,12 @@ def has_pending_runs(model: str) -> bool:
     return row is not None
 
 
+def delete_run(run_id: int) -> bool:
+    with db() as conn:
+        cur = conn.execute("delete from run where id = :run_id", {"run_id": run_id})
+    return cur.rowcount == 1
+
+
 def load_run_config(run_id: int) -> dict:
     with db() as conn:
         row = conn.execute(

@@ -5,7 +5,9 @@ from llm_bias.models import AnswerType
 
 
 def normalize_label(raw: str) -> str:
-    return " ".join(raw.split()).lower()
+    text = " ".join(raw.split()).lower()
+    text = re.sub(r"[^a-z0-9 ]+", "", text)
+    return text
 
 
 def parse_number(text: str) -> int | None:

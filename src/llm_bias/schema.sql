@@ -22,13 +22,13 @@ create table if not exists run (
 );
 
 create table if not exists run_prompt (
-    run_id integer not null references run(id),
+    run_id integer not null references run(id) on delete cascade,
     prompt_id integer not null references prompt(id),
     primary key (run_id, prompt_id)
 );
 
 create table if not exists sample (
-    run_id integer not null references run(id),
+    run_id integer not null references run(id) on delete cascade,
     prompt_id integer not null references prompt(id),
     sample_index integer not null,
     raw text not null,

@@ -11,6 +11,11 @@ research jobs into declarative YAML.
 - [x] Dashboard is served by FastAPI at `/`; dashboard and analysis endpoints exist.
 - [x] No attempt cap, no persistent failed state.
 
+## Ideas / future
+
+- Save top-k logits/probabilities per prompt instead of (or in addition to) many samples, so one completion yields a distribution over labels and reduces sampling cost. Requires sampler + schema changes; analysis would weight by probability.
+- what is the point of lease again? can it keep refreshing? can we lower the lease time? once one worker finishes, it waits for the lease time to expire before taking up another run
+
 ## Principles
 
 1. `sample.raw` is the contract; never store derived data.

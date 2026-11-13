@@ -27,3 +27,6 @@ server: ## launch the project llama-server in the background
 
 clean: ## remove caches
 	rm -rf __pycache__ .ruff_cache
+
+reports: ## regenerate all plotly HTML reports
+	uv run llm-bias report --all

@@ -1,0 +1,18 @@
+name: qwen35-particle
+experiment: particle
+answer_type: word
+models:
+  - Qwen3.5-4B-Q3_K_M
+  - Qwen3.5-4B-Q4_0
+  - Qwen3.5-4B-Q5_K_M
+  - Qwen3.5-4B-Q6_K
+  - Qwen3.5-4B-Q8_0
+prompts:
+  - What is your favourite particle?
+  - Give me a particle that you like
+  - Which particle do you like the most?
+samples_per_prompt: 333
+params:
+  temperature: 1.0
+  top_p: 1.0
+  reasoning_effort: null

@@ -5,9 +5,10 @@ import sys
 import yaml
 from pydantic import ValidationError
 
-from llm_bias.db import init_db
+from llm_bias.db import db, init_db
 from llm_bias.jobspec import load_job_spec, resolved_config
 from llm_bias.models import RunRequest
+from llm_bias.report import generate_report
 from llm_bias.runs import (
     create_run,
     get_run_progress,
@@ -85,10 +86,25 @@ def _job_status(args: argparse.Namespace) -> int:
         return 1
     for row in rows:
         expected = row["n_prompts"] * row["samples_per_prompt"]
-        print(
-            f"run {row['id']}: {row['model']} status={row['status']} "
-            f"samples={row['n_samples']}/{expected}"
-        )
+        print(f"run {row['id']}: {row['model']} status={row['status']} samples={row['n_samples']}/{expected}")
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    init_db()
+    out_dir = args.out_dir
+    if args.all or args.experiment is None:
+        with db() as conn:
+            names = [r["experiment"] for r in conn.execute("select distinct experiment from run").fetchall()]
+        if not names:
+            print("no experiments found", file=sys.stderr)
+            return 1
+        for name in names:
+            path = generate_report(experiment=name, out_dir=out_dir)
+            print(str(path))
+        return 0
+    path = generate_report(experiment=args.experiment, out_dir=out_dir)
+    print(str(path))
     return 0
 
 
@@ -112,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = job_sub.add_parser("status", help="show progress for a run name")
     status_parser.add_argument("name", nargs="?", help="run name to inspect")
     status_parser.set_defaults(handler=_job_status)
+
+    report_parser = subparsers.add_parser("report", help="generate a Plotly HTML report")
+    report_parser.add_argument("experiment", nargs="?", default=None, help="experiment name (default: all)")
+    report_parser.add_argument("--all", action="store_true", help="generate a report for every experiment")
+    report_parser.add_argument("--out-dir", default=None, help="output directory")
+    report_parser.set_defaults(handler=_report)
 
     return parser
 

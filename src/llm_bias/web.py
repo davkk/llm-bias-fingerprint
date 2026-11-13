@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from llm_bias import analysis, config
 from llm_bias.db import db, init_db
 from llm_bias.models import RunRequest
-from llm_bias.runs import create_run
+from llm_bias.runs import create_run, delete_run
 from llm_bias.sampler import worker
 
 logging.basicConfig(
@@ -103,7 +103,8 @@ def create_app(start_workers: bool = True) -> FastAPI:
                     run.status,
                     run.lease_until,
                     (select count(*) from run_prompt where run_prompt.run_id = run.id) as n_prompts,
-                    (select count(*) from sample where sample.run_id = run.id) as n_samples
+                    (select count(*) from sample where sample.run_id = run.id) as n_samples,
+                    (select group_concat(raw, ', ') from (select raw from sample where sample.run_id = run.id order by id)) as all_values
                 from run
                 order by run.id desc
                 """
@@ -129,6 +130,16 @@ def create_app(start_workers: bool = True) -> FastAPI:
             logger.exception("Error starting run")
             raise HTTPException(status_code=500, detail="Internal database error")
         return {"run_id": run_id}
+
+    @app.delete("/runs/{run_id}", status_code=204)
+    async def remove_run(run_id: int):
+        try:
+            ok = await asyncio.to_thread(delete_run, run_id)
+        except sqlite3.Error:
+            logger.exception("Error removing run %s", run_id)
+            raise HTTPException(status_code=500, detail="Internal database error")
+        if not ok:
+            raise HTTPException(status_code=404, detail="Run not found")
 
     app.mount("/", StaticFiles(directory=config.STATIC_DIR, html=True), name="static_root")
 

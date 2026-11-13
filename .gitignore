@@ -14,6 +14,9 @@ data/
 
 *.db*
 
+# generated reports
+static/reports/
+
 # project llama-server runtime state and generated model links
 .run/
 llama/models/
