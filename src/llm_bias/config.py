@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 
-SYSTEM_PROMPT = "respond only with a number or a word that the user asks for"
+SYSTEM_PROMPT = "respond only with single word/number depending on the user's question"
 
 MAX_TOKENS = 16
 
