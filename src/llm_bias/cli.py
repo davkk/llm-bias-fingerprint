@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
@@ -95,7 +96,7 @@ def _job_status(args: argparse.Namespace) -> int:
 def _report(args: argparse.Namespace) -> int:
     init_db()
     out_dir = args.out_dir
-    if args.all or args.experiment is None:
+    if args.all or args.file is None:
         with db() as conn:
             names = [r["experiment"] for r in conn.execute(queries.GET_DISTINCT_EXPERIMENTS).fetchall()]
         if not names:
@@ -105,7 +106,16 @@ def _report(args: argparse.Namespace) -> int:
             path = generate_report(experiment=name, out_dir=out_dir)
             print(str(path))
         return 0
-    path = generate_report(experiment=args.experiment, out_dir=out_dir)
+    target = args.file
+    experiment = target
+    if Path(target).is_file():
+        try:
+            spec = load_job_spec(target)
+        except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
+            print(f"llm-bias report: invalid spec: {exc}", file=sys.stderr)
+            return 1
+        experiment = spec.experiment
+    path = generate_report(experiment=experiment, out_dir=out_dir)
     print(str(path))
     return 0
 
@@ -132,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(handler=_job_status)
 
     report_parser = subparsers.add_parser("report", help="generate a Plotly HTML report")
-    report_parser.add_argument("experiment", nargs="?", default=None, help="experiment name (default: all)")
+    report_parser.add_argument("file", nargs="?", default=None, help="path to a YAML job spec (or experiment name)")
     report_parser.add_argument("--all", action="store_true", help="generate a report for every experiment")
     report_parser.add_argument("--out-dir", default=None, help="output directory")
     report_parser.set_defaults(handler=_report)

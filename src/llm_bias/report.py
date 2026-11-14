@@ -470,7 +470,16 @@ def fig_prompt_pairwise_distance(pm):
     return fig
 
 
-def generate_report(experiment: str | None = None, out_dir: Path | None = None) -> Path:
+def generate_report(experiment: str | None = None, out_dir: Path | None = None, file=None) -> Path:
+    if file is not None and experiment is None:
+        from pathlib import Path as _Path
+
+        from llm_bias.jobspec import load_job_spec
+
+        if _Path(file).is_file():
+            experiment = load_job_spec(file).experiment
+        else:
+            experiment = file
     init_db()
     data = analysis.get_analysis(experiment=experiment)
     models = plane_models(data)
@@ -531,12 +540,18 @@ h1 {{ font-size: 18px; margin: 0 0 16px; }}
 
 def main(argv=None):
     import argparse
+    from pathlib import Path
 
     parser = argparse.ArgumentParser(prog="llm-bias report")
-    parser.add_argument("experiment", nargs="?", default=None, help="experiment name (default: all)")
+    parser.add_argument("file", nargs="?", default=None, help="path to a YAML job spec (or experiment name)")
     parser.add_argument("--out-dir", default=None, help="output directory (default: static/reports)")
     args = parser.parse_args(argv)
-    path = generate_report(experiment=args.experiment, out_dir=args.out_dir)
+    experiment = args.file
+    if args.file is not None and Path(args.file).is_file():
+        from llm_bias.jobspec import load_job_spec
+
+        experiment = load_job_spec(args.file).experiment
+    path = generate_report(experiment=experiment, out_dir=args.out_dir)
     print(str(path))
     return 0
 
